@@ -197,8 +197,8 @@ ntb_plx_init(device_t dev)
 			}
 		}
 
-		/* Enable Link Interface LUT entry 0 for 0:0.0. */
-		PNTX_WRITE(sc, 0xdb4, 1);
+		/* Enable Link Interface LUT entries 0/1 for peer 0/1. */
+		PNTX_WRITE(sc, 0xdb4, 0x00090001);
 	}
 
 	/*
@@ -230,6 +230,9 @@ ntb_plx_isr(void *arg)
 	uint32_t val;
 
 	ntb_db_event((device_t)arg, 0);
+
+	if (sc->link)	/* Link Interface has no Link Error registers. */
+		return;
 
 	val = NTX_READ(sc, 0xfe0);
 	if (val == 0)
@@ -275,8 +278,11 @@ ntb_plx_setup_intr(device_t dev)
 		device_printf(dev, "bus_setup_intr failed: %d\n", error);
 		return (error);
 	}
-	NTX_WRITE(sc, 0xfe0, 0xf);	/* Clear link interrupts. */
-	NTX_WRITE(sc, 0xfe4, 0x0);	/* Unmask link interrupts. */
+
+	if (!sc->link) { /* Link Interface has no Link Error registers. */
+		NTX_WRITE(sc, 0xfe0, 0xf);	/* Clear link interrupts. */
+		NTX_WRITE(sc, 0xfe4, 0x0);	/* Unmask link interrupts. */
+	}
 	return (0);
 }
 
@@ -285,7 +291,9 @@ ntb_plx_teardown_intr(device_t dev)
 {
 	struct ntb_plx_softc *sc = device_get_softc(dev);
 
-	NTX_WRITE(sc, 0xfe4, 0xf);	/* Mask link interrupts. */
+	if (!sc->link)	/* Link Interface has no Link Error registers. */
+		NTX_WRITE(sc, 0xfe4, 0xf);	/* Mask link interrupts. */
+
 	if (sc->int_res) {
 		bus_teardown_intr(dev, sc->int_res, sc->int_tag);
 		bus_release_resource(dev, SYS_RES_IRQ, sc->int_rid,
@@ -623,13 +631,12 @@ ntb_plx_mw_set_trans_internal(device_t dev, unsigned mw_idx)
 			val64 = 0;
 			if (size > 0)
 				val64 = (~(size - 1) & ~0xfffff);
-			val64 |= 0x4;
+			val64 |= 0xc;
 			PNTX_WRITE(sc, 0xe8 + (mw->mw_bar - 2) * 4, val64);
 			PNTX_WRITE(sc, 0xe8 + (mw->mw_bar - 2) * 4 + 4, val64 >> 32);
 
 			/* Set Link Interface BAR address. */
 			val64 = 0x2000000000000000 * mw->mw_bar + off;
-			val64 |= 0x4;
 			PNTX_WRITE(sc, PCIR_BAR(mw->mw_bar), val64);
 			PNTX_WRITE(sc, PCIR_BAR(mw->mw_bar) + 4, val64 >> 32);
 		}
@@ -906,6 +913,9 @@ static device_method_t ntb_plx_methods[] = {
 	DEVMETHOD(device_probe,		ntb_plx_probe),
 	DEVMETHOD(device_attach,	ntb_plx_attach),
 	DEVMETHOD(device_detach,	ntb_plx_detach),
+	/* Bus interface */
+	DEVMETHOD(bus_child_location_str, ntb_child_location_str),
+	DEVMETHOD(bus_print_child,	ntb_print_child),
 	/* NTB interface */
 	DEVMETHOD(ntb_link_is_up,	ntb_plx_link_is_up),
 	DEVMETHOD(ntb_link_enable,	ntb_plx_link_enable),
